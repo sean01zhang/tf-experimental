@@ -31,7 +31,7 @@ def load_image(filename):
     colored_image = image[:, :width, :]
     line_image = image[:, width:, :]
 
-    return colored_image, line_image
+    return line_image, colored_image
 
 def resize(color, line, height, width):
     color = tf.image.resize(
@@ -45,23 +45,23 @@ def resize(color, line, height, width):
         method=tf.image.ResizeMethod.NEAREST_NEIGHBOR
     )
 
-    return color, line
+    return line, color
 
 def normalize(color, line):
     color = (color / 127.5) - 1
     line = (line / 127.5) - 1
 
-    return color, line
+    return line, color
 
 def load_image_train(filename):
-    color, line = load_image(filename)
-    color, line = normalize(color, line)
-    return color, line
+    line, color = load_image(filename)
+    line, color = normalize(color, line)
+    return line, color
 
 def load_image_test(filename):
-    color, line = load_image(filename)
-    color, line = normalize(color, line)
-    return color, line
+    line, color = load_image(filename)
+    line, color = normalize(color, line)
+    return line, color
 
 
 '''

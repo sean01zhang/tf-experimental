@@ -15,28 +15,6 @@ from IPython import display
 import numpy as np
 
 
-'''
-###############################################################################
-    Training Data is 512x512 for each square (side by side, colored | lines)
-    Try some GAN BOIS
-###############################################################################
-'''
-PATH = '../archive/data'
-
-BUFFER_SIZE = 400
-BATCH_SIZE = 10
-IMG_HEIGHT = 512
-IMG_WIDTH = 512
-
-
-# config = tf.compat.v1.ConfigProto(gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.8)
-# #device_count = {'GPU': 1}
-# )
-# config.gpu_options.allow_growth = True
-# session = tf.compat.v1.Session(config=config)
-# tf.compat.v1.keras.backend.set_session(session)
-
-
 def load_image(filename):
     image = tf.io.read_file(filename)
     image = tf.image.decode_png(image)
@@ -84,21 +62,60 @@ def load_image_test(filename):
 
 '''
 ##############################################################################
-    Here is the input pipeline.
+    Aux Functions to Assist
 ##############################################################################
 '''
-train_dataset = tf.data.Dataset.list_files(PATH + "/train/*.png")
-train_dataset = train_dataset.map(load_image_train, num_parallel_calls=tf.data.AUTOTUNE)
-train_dataset = train_dataset.shuffle(BUFFER_SIZE)
-train_dataset = train_dataset.batch(BATCH_SIZE)
 
-test_dataset = tf.data.Dataset.list_files(PATH + "/val/*.png")
-test_dataset = test_dataset.map(load_image_test, num_parallel_calls=tf.data.AUTOTUNE)
-test_dataset = test_dataset.batch(BATCH_SIZE)
+def downsample(filters, size, strides=2, padding="same", apply_batchnorm=True, alpha=0.2):
+    initializer = tf.random_normal_initializer(0., 0.02) ## <-- what are you doing?
+
+    result = tf.keras.Sequential()
+    result.add(tf.keras.layers.Conv2D(
+        filters,        # Integer to specify dimensionality of output space
+        size,           # height and width of convolution window. Single -> all dim
+        strides=strides,      # <-- tuple specifying strides of convolution along 
+                        #     height/width. Single int means applied to all dimensions
+        padding=padding, # <-- same  >> even padding to maintain that output and 
+                        #              input have same dimensions
+                        #     valid >> no padding
+        kernel_initializer=initializer, # initializer for kernel weights matrix
+        use_bias=False  # whether the layer uses a bias vector
+    ))
+
+    if apply_batchnorm:
+        result.add(tf.keras.layers.BatchNormalization()) # normalizes its inputs.
+
+    result.add(tf.keras.layers.LeakyReLU(alpha=alpha)) # leaky relu gradient 
+
+    return result
 
 
+def upsample(filters, size, strides=2, padding="same", apply_batchnorm=True, dropout=False, alpha=0.2):
+    initializer = tf.random_normal_initializer(0., 0.02) # <-- What are you?!!
 
+    result = tf.keras.Sequential()
+    result.add(tf.keras.layers.Conv2DTranspose(
+        filters,        # Integer to specify dimensionality of output space
+        size,           # height and width of convolution window. Single -> all dim
+        strides=strides,        # <-- tuple specifying strides of convolution along 
+                        #     height/width. Single int means applied to all dimensions
+        padding=padding, # <-- same  >> even padding to maintain that output and 
+                        #              input have same dimensions
+                        #     valid >> no padding
+        kernel_initializer=initializer, # initializer for kernel weights matrix
+        use_bias=False  # whether the layer uses a bias vector
+    ))
 
+    if apply_batchnorm:
+      result.add(tf.keras.layers.BatchNormalization())
+
+    if dropout:
+        result.add(tf.keras.layers.Dropout(dropout))
+
+    result.add(tf.keras.layers.LeakyReLU(alpha=alpha))
+    ## pix2pix uses relu ^^
+
+    return result
 
 '''
 ##############################################################################
@@ -164,33 +181,6 @@ def Generator(drop_rate, alpha, inp_shape=(512,512,3)):
 
     return tf.keras.Model(inputs=inputs, outputs=x)
 
-loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-
-def generator_loss(disc_generated_output, gen_output, target, vgg_net1, vgg_net2, shape=(512, 512, 3)):
-    pixelLevelLoss_weight=100
-    totalVariationLoss_weight=.0001
-    featureLevelLoss_weight=.01
-
-    net1_out = vgg_net1([tf.image.resize(target, (224,224))]) 
-    net2_out = vgg_net2([tf.image.resize(gen_output, (224,224))])
-
-    ftloss = K.mean(K.sqrt(K.sum(K.square(net1_out - net2_out))))
-
-    ganloss = loss_object(
-        tf.ones_like(disc_generated_output), 
-        disc_generated_output
-    )
-
-    tvloss = K.abs(K.sqrt(
-        K.sum(K.square(gen_output[:, 1:, :, :] - gen_output[:, :-1, :, :])) + 
-        K.sum(K.square(gen_output[:, :, 1:, :] - gen_output[:, :, :-1, :]))
-    ))
-    l1loss = tf.reduce_mean(tf.abs(target - gen_output))
-    total_gen_loss = ganloss + pixelLevelLoss_weight*l1loss + totalVariationLoss_weight*tvloss + featureLevelLoss_weight*ftloss
-
-    return total_gen_loss, ganloss, l1loss
-
-
 '''
 ##############################################################################
     Discriminator
@@ -232,25 +222,39 @@ def Discriminator(alpha, learning_rate, shape=[512, 512, 3]):
 
     return model
 
-def discriminator_loss(disc_real_output, disc_generated_output):
-    real_loss = loss_object(tf.ones_like(disc_real_output), disc_real_output)
-    generated_loss = loss_object(tf.zeros_like(disc_generated_output), disc_generated_output)
-
-    return real_loss + generated_loss
 '''
 ##############################################################################
-    Helpful functions
+    Loss Functions
 ##############################################################################
 '''
-# def writeLog(callback, name, loss, batchNum, flush=False):
-#     summary = tf.Summary()
-#     summary_value = summary.value.add()
-#     summary_value.tag = name
-#     summary_value.simple_value = loss
-#     callback.writer.add_summary(summary, batch_no)
 
-#     if flush:
-#       callback.writer.flush()
+loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+
+def generator_loss(disc_generated_output, gen_output, target, vgg_net1, vgg_net2, shape=(512, 512, 3)):
+    pixelLevelLoss_weight=100
+    totalVariationLoss_weight=.0001
+    featureLevelLoss_weight=.01
+
+    net1_out = vgg_net1([tf.image.resize(target, (224,224))]) 
+    net2_out = vgg_net2([tf.image.resize(gen_output, (224,224))])
+
+    ftloss = K.mean(K.sqrt(K.sum(K.square(net1_out - net2_out))))
+
+    ganloss = loss_object(
+        tf.ones_like(disc_generated_output), 
+        disc_generated_output
+    )
+
+    tvloss = K.abs(K.sqrt(
+        K.sum(K.square(gen_output[:, 1:, :, :] - gen_output[:, :-1, :, :])) + 
+        K.sum(K.square(gen_output[:, :, 1:, :] - gen_output[:, :, :-1, :]))
+    ))
+    l1loss = tf.reduce_mean(tf.abs(target - gen_output))
+    total_gen_loss = ganloss + pixelLevelLoss_weight*l1loss + totalVariationLoss_weight*tvloss + featureLevelLoss_weight*ftloss
+
+    return total_gen_loss, ganloss, l1loss, tvloss
+
+
 
 def showImages(model, testInput, target):
     prediction = model(testInput, training=True)
@@ -271,44 +275,10 @@ def showImages(model, testInput, target):
 
 '''
 ##############################################################################
-    Verify Generators Work
-##############################################################################
-'''
-generator = Generator(drop_rate=0.5, alpha=0.2)
-tf.keras.utils.plot_model(generator, show_shapes=True, dpi=64)
-
-discriminator = Discriminator(alpha=0.2, learning_rate=0.0002)
-tf.keras.utils.plot_model(discriminator, show_shapes=True, dpi=64)
-
-generator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
-discriminator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
-
-checkpoint_dir = './training_checkpoints'
-checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
-                                 discriminator_optimizer=discriminator_optimizer,
-                                 generator=generator,
-                                 discriminator=discriminator)
-
-from tensorflow.keras.applications.vgg16 import preprocess_input
-from tensorflow.keras.applications.vgg16 import VGG16
-
-vgg = VGG16(weights='imagenet')
-vggn1 = Model(inputs=vgg.input, outputs=tf.keras.layers.ReLU()(vgg.get_layer('block2_conv2').output))
-vggn2 = Model(inputs=vgg.input, outputs=tf.keras.layers.ReLU()(vgg.get_layer('block2_conv2').output))
-
-
-for example_input, example_target in test_dataset.take(1):
-  showImages(generator, example_input, example_target)
-
-
-'''
-##############################################################################
     Train steps
 ##############################################################################
 '''
 
-import datetime
 log_dir="logs/"
 
 summary_writer = tf.summary.create_file_writer(
@@ -351,43 +321,3 @@ def train_step(input, target, epoch):
         tf.summary.scalar('gen_gan_loss', gen_gan_loss, step=epoch)
         tf.summary.scalar('gen_l1_loss', gen_l1_loss, step=epoch)
         tf.summary.scalar('dsc_loss', dsc_loss, step=epoch)
-
-'''
-##############################################################################
-    Time to train!
-##############################################################################
-'''
-
-def fit(train_ds, epochs, test_ds):
-    for epoch in range(epochs):
-        start = time.time()
-
-        display.clear_output(wait=True)
-
-        for input, targ in test_ds.take(1):
-            showImages(generator, input, targ)
-
-        print(f"Epoch: {epoch}")
-
-        for n, (input, targ) in train_ds.enumerate():
-            print('.', end="")
-            if (n+1) % 100 == 0:
-                print()
-            train_step(input, targ, epoch)
-        print()
-
-        if (epoch+1) % 20 == 0:
-            checkpoint.save(file_prefix=checkpoint_prefix)
-
-        print(f"Time taken for epoch {epoch+1} is {time.time()-start} s\n")
-    checkpoint.save(file_prefix=checkpoint_prefix)
-
-
-
-'''
-##############################################################################
-    Do the magic!
-##############################################################################
-'''
-
-fit(train_dataset, 50, test_dataset)
